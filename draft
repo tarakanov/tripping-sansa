@@ -1,25 +1,60 @@
+// обработчик сенсора просыпания
+function standby_handler() {
+    
+}
+
+function standby() {
+    // весы в режиме ожидания
+    weight_en_l.write(1);
+    server.log("весы в режиме ожидания");
+    
+    local STANDBY_TIME = 20; //время в режиме ожидания (секунды)
+    local standby_start = hardware.millis();
+    while ((hardware.millis() - standby_start) < STANDBY_TIME*1000) {
+                if (myScales.weight_detect()) {
+                    
+                    weight_en_l.write(0);
+                    imp.sleep(0.2);
+                    weight_en_l.write(1);
+                    server.log(format("Weight: %.1f Kg", myScales.read())); // процесс измерения массы
+                    
+                    //рестарт таймаута после детекции массы
+                    standby_start = hardware.millis();
+                    server.log("рестарт таймаута");
+                }
+                
+            }
+    // весы в режиме сна
+    weight_en_l.write(0);
+    imp.onidle( function() {
+        server.log("весы перешли в спящий режим");
+        //server.sleepfor(999999999); //глубокий спящий режим 
+        imp.setpowersave(1); //экономичный расход wifi
+    });
+}
+
 // обработка нажатия кнопки
 function buttonPress() {
     local state = button.read();
+    imp.sleep(0.02); //software debounce
     if (state == 1)
     {
         server.log("Release");
-        {
+        
         // начало процесса измерения
         weight_en_l.write(1);
-        server.log("Weight is: " + myScales.read()); // процесс измерения массы
+        server.log(format("Weight: %.1f Kg", myScales.read())); // процесс измерения массы
         // завершение процесса измерения
         weight_en_l.write(0);
-        }
         
     } else
     {
-        
         server.log("Press");
-
-
     }
 }
+
+
+
 
 // класс описание полного моста для измерения массы тела
 class w_bridge { 
@@ -32,40 +67,70 @@ class w_bridge {
 
 	// analog input pin
 	p_bridge 		= null;
+	p_ref           = null;
 	points_per_read = null;
-
-	constructor(pin, v_noload, w_noload, v_load, w_load = 5.0, points = 10) {
+    vbridge_tol    = null; // толерантность изменения напряжения моста
+    
+	constructor(pin, pinref, v_noload, w_noload, v_load, w_load, points = 10, tol = 10) {
 		this.p_bridge = pin;
+		this.p_ref = pinref;
 		this.p_bridge.configure(ANALOG_IN);
-
+        this.p_ref.configure(ANALOG_IN);
+        
 		// force all of these values to floats in case they come in as integers
 		this.vbridge_noload = v_noload * 1.0;
 		this.weight_noload = w_noload * 1.0;
 		this.vbridge_withload = v_load * 1.0;
 		this.weight_withload = w_load * 1.0;
+		this.points_per_read = points * 1.0;
+		this.vbridge_tol = tol * 1.0;
 	}
 
 	// вычисление массы на весах
 	function read() {
 		local vbridge_raw = 0; //моментальное значение напряжения моста
-		local vdda_raw = 0; //моментальное значение напряжение питания (опорного напряжения)
-		
+		local vdda_raw = 0; //моментальное значение напряжение питания
+		local vref_raw = 0; //моментальное значение напряжение опорного напряжения
+		server.log("начало измерения");
 		for (local i = 0; i < points_per_read; i++) {
-		    vdda_raw += hardware.voltage();
+		    vref_raw += p_ref.read();
 		    vbridge_raw += p_bridge.read();
+		    vdda_raw += hardware.voltage();
 		}
-		local vdda = (vdda_raw / points_per_read); // среднее значение опорного напряжения
-		local v_bridge = (vbridge_raw / points_per_read); // среднее значение напряжение моста
 		
+		
+		local vdda = (vdda_raw / points_per_read); // среднее значение напряжения питания
+		local v_bridge = (vbridge_raw / points_per_read) * (vdda / 65535.0); // среднее значение напряжение моста
+		local vref = (vref_raw / points_per_read) * (vdda / 65535.0); // среднее значение опорного напряжения
+		
+		server.log("конец измерения. vref: " + vref + " v_bridge: " + v_bridge + "количество замеров: " + points_per_read)
 		local weight = weight_withload * (v_bridge - vbridge_noload) / (vbridge_withload - vbridge_noload); // вычисление массы
 		return weight;
+	}
+	
+	function weight_detect() {
+	    local vbridge_start = p_bridge.read();
+	    imp.sleep(0.02);
+	    if (math.abs(vbridge_start - p_bridge.read()) > (vbridge_start * vbridge_tol * 0.01)) {
+	        return 1;
+	    } else {
+	        return 0;
+	    }
+	    
+	}
+	
+	function stable_read() {
+	    if (!weight_detect()) {return(this.read());}
 	}
 
 }
 
+
+
 // кнопка запуска измерения
 button <- hardware.pin1;
-
+// датчик просыпания
+wakeup_sensor <- hardware.pin7;
 
 //индикатор процесса измерения (горит, когда процесс запущен)
 weight_en_l <- hardware.pin9;
@@ -74,9 +139,13 @@ weight_en_l.configure(DIGITAL_OUT);
 
 // пин, на котором сидит Vo от INA126
 weight_sns <- hardware.pin2;
+// пин опорного напряжения
+weight_ref <- hardware.pin5;
 
 // инициализирование класса полного моста
-myScales <- w_bridge(weight_sns, 1.55, 0.0, 1.44, 5.00, 10);
+myScales <- w_bridge(weight_sns, weight_ref, 1.53, 0.0, 1.305, 7.4, 100, 30);
 
 // задаём реакцию на нажатие кнопки - запуск обработчика
-button.configure(DIGITAL_IN_PULLUP, buttonPress);
+button.configure(DIGITAL_IN_WAKEUP, standby);
+wakeup_sensor.configure(DIGITAL_IN_PULLUP, buttonPress);
+server.log("Весы онлайн");

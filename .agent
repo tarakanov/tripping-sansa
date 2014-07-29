@@ -1,0 +1,63 @@
+class KeenIO {
+    _baseUrl = "https://api.keen.io/3.0/projects/";
+    
+    _projectId = null;
+    _apiKey = null;
+    
+    constructor(projectId, apiKey) {
+        _projectId = projectId;
+        _apiKey = apiKey;
+    }
+    
+    /***************************************************************************
+    * Parameters: 
+    *   eventCollection - the name of the collection you are pushing data to
+    *   data - the data you are pushing
+    *   cb - an optional callback to execute upon completion
+    *
+    * Returns: 
+    *   HTTPResponse - if a callback was NOT specified  
+    *   None - if a callback was specified
+    ***************************************************************************/
+    function sendEvent(eventCollection, data, cb = null) {
+        local url = _buildUrl(eventCollection);
+        local headers = {
+            "Content-Type": "application/json"
+        };
+        local encodedData = http.jsonencode(data);
+        server.log(encodedData);
+        
+        local request = http.post(url, headers, encodedData);
+        
+        // if a callback was specificed
+        if (cb == null) {
+            return request.sendsync();
+        } else {
+            request.sendasync(cb);
+        }
+    }
+    
+    /*************** Private Functions - (DO NOT CALL EXTERNALLY) ***************/
+    function _buildUrl(eventCollection, projectId = null, apiKey = null) {
+        if (projectId == null) projectId = _projectId;
+        if (apiKey == null) apiKey = _apiKey;
+        
+        
+        local url = _baseUrl + projectId + "/events/" + eventCollection + "?api_key=" + apiKey;
+        return url;
+    }
+}
+
+
+
+const KEEN_PROJECT_ID = "53968b7e00111c75e400000a";
+const KEEN_WRITE_API_KEY = "48cbb0e978d0bc9c36276e2969268f55a5fe4f9d41f9f44e8cbcb3ebcdd2202c0e1b2f8a4c79ff4afa0bb74d8c12152d2443b455364ab2ad68c526c286eb1ae51c0d20e7e12379a8e5587cd713adf2e5eae7618b4244948a5910b5d60d9bf7bc0740dcd55f1abf1f4dfedcbd08b0f10e";
+
+keen <- KeenIO(KEEN_PROJECT_ID, KEEN_WRITE_API_KEY);
+
+
+
+device.on("data", function (datapoint) {
+    keen.sendEvent("weightTable", datapoint);
+    server.log("вес: " + datapoint.weight + "id весов: " + datapoint.id);
+});
